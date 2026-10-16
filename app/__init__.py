@@ -1,0 +1,1 @@
+"""ClinicQ Application Package."""
