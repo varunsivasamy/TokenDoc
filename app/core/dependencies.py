@@ -61,3 +61,15 @@ def require_role(*allowed_roles: UserRole) -> Callable[[User], User]:
         return current_user
 
     return role_checker
+
+
+def get_current_tenant_id(
+    current_user: Annotated[User, Depends(get_current_user)],
+) -> str:
+    """Dependency extracting and verifying the clinic_id tenant boundary from the token."""
+    if not current_user.clinic_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not associated with an active clinic tenant",
+        )
+    return current_user.clinic_id
