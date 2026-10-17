@@ -1,6 +1,8 @@
 from typing import TYPE_CHECKING
+
 from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
@@ -18,7 +20,9 @@ class Clinic(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     # Relationships
-    users: Mapped[list["User"]] = relationship("User", back_populates="clinic", cascade="all, delete-orphan")
+    users: Mapped[list["User"]] = relationship(
+        "User", back_populates="clinic", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Clinic id={self.id} slug={self.slug}>"
