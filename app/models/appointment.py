@@ -50,10 +50,10 @@ class Appointment(Base, UUIDPrimaryKeyMixin, TimestampMixin):
         DateTime(timezone=True), nullable=False, index=True
     )
     slot_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    status: Mapped[AppointmentStatus] = mapped_column(
+    status: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-        default=AppointmentStatus.BOOKED,
+        default=AppointmentStatus.BOOKED.value,
         index=True,
     )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

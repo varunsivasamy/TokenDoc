@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 
+from app.api.v1.appointments import router as appointments_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.doctors import router as doctors_router
 from app.api.v1.patients import router as patients_router
@@ -29,6 +30,7 @@ def create_app() -> FastAPI:
     application.include_router(auth_router, prefix="/api/v1")
     application.include_router(doctors_router, prefix="/api/v1")
     application.include_router(patients_router, prefix="/api/v1")
+    application.include_router(appointments_router, prefix="/api/v1")
 
     return application
 

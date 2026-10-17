@@ -25,9 +25,9 @@ test_engine = create_engine(
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def setup_test_db():
-    """Create all database tables in memory once for the test session."""
+@pytest.fixture(autouse=True)
+def setup_and_teardown_tables():
+    """Ensure a clean database schema for each test."""
     Base.metadata.create_all(bind=test_engine)
     yield
     Base.metadata.drop_all(bind=test_engine)
@@ -35,27 +35,24 @@ def setup_test_db():
 
 @pytest.fixture
 def db_session() -> Generator[Session, None, None]:
-    """Provide a transactional database session per test, rolling back on completion."""
-    connection = test_engine.connect()
-    transaction = connection.begin()
-    session = TestingSessionLocal(bind=connection)
-
-    yield session
-
-    session.close()
-    transaction.rollback()
-    connection.close()
+    """Provide a database session for test setup and verification."""
+    session = TestingSessionLocal(bind=test_engine)
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 @pytest.fixture
-def client(db_session: Session) -> Generator[TestClient, None, None]:
-    """TestClient configured with database session dependency override."""
+def client() -> Generator[TestClient, None, None]:
+    """TestClient configured with isolated per-request database sessions for concurrency support."""
 
     def override_get_db():
+        session = TestingSessionLocal(bind=test_engine)
         try:
-            yield db_session
+            yield session
         finally:
-            pass
+            session.close()
 
     app.dependency_overrides[get_db] = override_get_db
     with TestClient(app) as test_client:
