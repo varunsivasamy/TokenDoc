@@ -1,5 +1,7 @@
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 from app.models.clinic import Clinic
+from app.models.doctor import Doctor
+from app.models.patient import Patient
 from app.models.user import User
 
 __all__ = [
@@ -7,5 +9,7 @@ __all__ = [
     "TimestampMixin",
     "UUIDPrimaryKeyMixin",
     "Clinic",
+    "Doctor",
+    "Patient",
     "User",
 ]

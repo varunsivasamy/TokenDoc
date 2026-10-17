@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 
 from app.api.v1.auth import router as auth_router
+from app.api.v1.doctors import router as doctors_router
+from app.api.v1.patients import router as patients_router
 from app.core.config import settings
 
 
@@ -25,6 +27,8 @@ def create_app() -> FastAPI:
 
     # Mount API Routers
     application.include_router(auth_router, prefix="/api/v1")
+    application.include_router(doctors_router, prefix="/api/v1")
+    application.include_router(patients_router, prefix="/api/v1")
 
     return application
 
