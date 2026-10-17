@@ -1,7 +1,9 @@
 from datetime import date
 from typing import TYPE_CHECKING
+
 from sqlalchemy import Boolean, Date, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.models.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
 
 if TYPE_CHECKING:
@@ -12,9 +14,7 @@ class Patient(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     """Patient medical registry entity scoped by clinic tenant."""
 
     __tablename__ = "patients"
-    __table_args__ = (
-        UniqueConstraint("clinic_id", "phone", name="uq_patients_clinic_phone"),
-    )
+    __table_args__ = (UniqueConstraint("clinic_id", "phone", name="uq_patients_clinic_phone"),)
 
     clinic_id: Mapped[str] = mapped_column(
         String(36),

@@ -5,7 +5,9 @@ Revises: 0001_clinic_and_user
 Create Date: 2026-10-17 15:00:00.000000
 
 """
+
 from collections.abc import Sequence
+
 import sqlalchemy as sa
 from alembic import op
 
@@ -24,12 +26,20 @@ def upgrade() -> None:
         sa.Column("clinic_id", sa.String(length=36), nullable=False),
         sa.Column("user_id", sa.String(length=36), nullable=True),
         sa.Column("full_name", sa.String(length=255), nullable=False),
-        sa.Column("specialty", sa.String(length=100), nullable=False, server_default="General Practice"),
+        sa.Column(
+            "specialty", sa.String(length=100), nullable=False, server_default="General Practice"
+        ),
         sa.Column("room_number", sa.String(length=50), nullable=False, server_default="Room 1"),
-        sa.Column("default_slot_duration_minutes", sa.Integer(), nullable=False, server_default="15"),
+        sa.Column(
+            "default_slot_duration_minutes", sa.Integer(), nullable=False, server_default="15"
+        ),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.ForeignKeyConstraint(["clinic_id"], ["clinics.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="SET NULL"),
         sa.PrimaryKeyConstraint("id"),
@@ -51,8 +61,12 @@ def upgrade() -> None:
         sa.Column("gender", sa.String(length=20), nullable=True),
         sa.Column("medical_record_number", sa.String(length=50), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.text("true")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         sa.ForeignKeyConstraint(["clinic_id"], ["clinics.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("clinic_id", "phone", name="uq_patients_clinic_phone"),
@@ -60,7 +74,12 @@ def upgrade() -> None:
     op.create_index(op.f("ix_patients_id"), "patients", ["id"], unique=False)
     op.create_index(op.f("ix_patients_clinic_id"), "patients", ["clinic_id"], unique=False)
     op.create_index(op.f("ix_patients_phone"), "patients", ["phone"], unique=False)
-    op.create_index(op.f("ix_patients_medical_record_number"), "patients", ["medical_record_number"], unique=False)
+    op.create_index(
+        op.f("ix_patients_medical_record_number"),
+        "patients",
+        ["medical_record_number"],
+        unique=False,
+    )
 
 
 def downgrade() -> None:
