@@ -1,0 +1,277 @@
+from collections.abc import Sequence
+from datetime import UTC, date, datetime
+
+from fastapi import HTTPException, status
+
+from app.domain.enums import QueueStatus
+from app.domain.exceptions import InvalidStateTransitionError
+from app.domain.ports import LiveQueueStore
+from app.domain.state_machine import transition_token
+from app.models.queue_token import QueueToken
+from app.repositories.doctor_repository import DoctorRepository
+from app.repositories.patient_repository import PatientRepository
+from app.repositories.token_repository import TokenRepository
+from app.schemas.queue import QueueItemResponse, TokenIssueRequest
+from app.services.live_queue import compute_priority_score, rebuild_live_queue
+
+
+class QueueService:
+    """Service managing walk-in token issuance, queue ordering, and state machine lifecycle."""
+
+    def __init__(
+        self,
+        token_repo: TokenRepository,
+        doctor_repo: DoctorRepository,
+        patient_repo: PatientRepository,
+        live_queue: LiveQueueStore | None = None,
+    ):
+        self._repo = token_repo
+        self._doctor_repo = doctor_repo
+        self._patient_repo = patient_repo
+        self._live_queue = live_queue
+
+    def issue_token(self, data: TokenIssueRequest, today: date | None = None) -> QueueToken:
+        """Issue a new walk-in or appointment token with atomic, gap-free numbering."""
+        token_date = today or datetime.now(UTC).date()
+
+        # Validate doctor
+        doctor = self._doctor_repo.get_by_id(data.doctor_id)
+        if not doctor or not doctor.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Doctor not found or inactive",
+            )
+
+        # Validate patient
+        patient = self._patient_repo.get_by_id(data.patient_id)
+        if not patient or not patient.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Patient not found or inactive",
+            )
+
+        # Atomic gap-free sequence counter
+        next_num = self._repo.get_next_token_number_atomic(doctor.id, token_date)
+
+        token = QueueToken(
+            clinic_id=self._repo.clinic_id,
+            doctor_id=data.doctor_id,
+            patient_id=data.patient_id,
+            token_number=next_num,
+            token_date=token_date,
+            is_emergency=data.is_emergency,
+            appointment_id=data.appointment_id,
+            status=QueueStatus.WAITING.value,
+        )
+        created_token = self._repo.create(token)
+
+        # Sync to live queue store (Redis ZSET or in-memory)
+        if self._live_queue is not None:
+            score = compute_priority_score(
+                status=created_token.status,
+                is_emergency=created_token.is_emergency,
+                token_number=created_token.token_number,
+                has_appointment_window=bool(created_token.appointment_id),
+            )
+            if score is not None:
+                self._live_queue.add_or_update(
+                    self._repo.clinic_id,
+                    created_token.doctor_id,
+                    created_token.token_date,
+                    created_token.id,
+                    score,
+                )
+
+        return created_token
+
+    def update_token_status(self, token_id: str, new_status: QueueStatus | str) -> QueueToken:
+        """Apply state machine transition to a token, updating lifecycle timestamps and live queue."""
+        token = self._repo.get_by_id(token_id)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Queue token not found",
+            )
+
+        try:
+            valid_new_status = transition_token(token.status, new_status)
+        except InvalidStateTransitionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+
+        now = datetime.now(UTC)
+        token.status = valid_new_status.value
+
+        if valid_new_status == QueueStatus.CALLED:
+            token.called_at = now
+        elif valid_new_status == QueueStatus.IN_CONSULTATION:
+            token.consultation_start_at = now
+        elif valid_new_status == QueueStatus.COMPLETED:
+            token.consultation_end_at = now
+
+        self._repo.db.commit()
+        self._repo.db.refresh(token)
+
+        # Update live queue
+        if self._live_queue is not None:
+            if valid_new_status in (
+                QueueStatus.COMPLETED,
+                QueueStatus.NO_SHOW,
+                QueueStatus.CANCELLED,
+            ):
+                self._live_queue.remove(
+                    self._repo.clinic_id, token.doctor_id, token.token_date, token.id
+                )
+            else:
+                score = compute_priority_score(
+                    status=valid_new_status.value,
+                    is_emergency=token.is_emergency,
+                    token_number=token.token_number,
+                    has_appointment_window=bool(token.appointment_id),
+                )
+                if score is not None:
+                    self._live_queue.add_or_update(
+                        self._repo.clinic_id,
+                        token.doctor_id,
+                        token.token_date,
+                        token.id,
+                        score,
+                    )
+
+        return token
+
+    def call_next(self, doctor_id: str, today: date | None = None) -> QueueToken:
+        """Call next patient in queue: Emergency first, then appointments, then arrival order."""
+        token_date = today or datetime.now(UTC).date()
+
+        next_token: QueueToken | None = None
+
+        # Check live queue if available
+        if self._live_queue is not None:
+            ordered_ids = self._live_queue.get_ordered_token_ids(
+                self._repo.clinic_id, doctor_id, token_date
+            )
+            for tid in ordered_ids:
+                cand = self._repo.get_by_id(tid)
+                if cand and cand.status == QueueStatus.WAITING.value:
+                    next_token = cand
+                    break
+
+        # Fallback to database query if live queue had no waiting token or was not present
+        if next_token is None:
+            tokens = self._repo.list_active_tokens_for_doctor(doctor_id, token_date)
+            waiting_tokens = [t for t in tokens if t.status == QueueStatus.WAITING.value]
+            if not waiting_tokens:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No patients currently waiting in queue",
+                )
+            # Priority sort: emergency first, then appointment, then arrival order
+            waiting_tokens.sort(
+                key=lambda t: (
+                    not t.is_emergency,
+                    not bool(t.appointment_id),
+                    t.token_number,
+                )
+            )
+            next_token = waiting_tokens[0]
+
+        return self.update_token_status(next_token.id, QueueStatus.CALLED)
+
+    def mark_no_show_timeout(self, token_id: str) -> QueueToken:
+        """Transition a called patient to NO_SHOW if they exceed waiting timeout."""
+        token = self._repo.get_by_id(token_id)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Queue token not found",
+            )
+        if token.status != QueueStatus.CALLED.value:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot mark token in '{token.status}' status as NO_SHOW; must be CALLED first",
+            )
+        return self.update_token_status(token_id, QueueStatus.NO_SHOW)
+
+    def rebuild_queue_cache(self, doctor_id: str, token_date: date) -> int:
+        """Rebuild doctor's live queue ZSET directly from Postgres truth."""
+        if self._live_queue is None:
+            return 0
+        return rebuild_live_queue(
+            db=self._repo.db,
+            store=self._live_queue,
+            clinic_id=self._repo.clinic_id,
+            doctor_id=doctor_id,
+            token_date=token_date,
+        )
+
+    def get_queue_for_doctor(
+        self, doctor_id: str, today: date | None = None
+    ) -> Sequence[QueueItemResponse]:
+        """Retrieve active queue ordered by priority and arrival."""
+        token_date = today or datetime.now(UTC).date()
+
+        active_tokens: list[QueueToken] = []
+
+        if self._live_queue is not None:
+            ordered_ids = self._live_queue.get_ordered_token_ids(
+                self._repo.clinic_id, doctor_id, token_date
+            )
+            for tid in ordered_ids:
+                tok = self._repo.get_by_id(tid)
+                if (
+                    tok
+                    and tok.status
+                    in (
+                        QueueStatus.WAITING.value,
+                        QueueStatus.CALLED.value,
+                        QueueStatus.IN_CONSULTATION.value,
+                    )
+                ):
+                    active_tokens.append(tok)
+
+        # Fallback to database query if live queue is empty or not configured
+        if not active_tokens:
+            tokens = self._repo.list_active_tokens_for_doctor(doctor_id, token_date)
+            active_tokens = [
+                t
+                for t in tokens
+                if t.status
+                in (
+                    QueueStatus.WAITING.value,
+                    QueueStatus.CALLED.value,
+                    QueueStatus.IN_CONSULTATION.value,
+                )
+            ]
+
+            def sort_key(t: QueueToken):
+                if t.status == QueueStatus.IN_CONSULTATION.value:
+                    return (0, 0, 0, t.token_number)
+                if t.status == QueueStatus.CALLED.value:
+                    return (1, 0, 0, t.token_number)
+                # WAITING: emergency first, then appointment, then token_number
+                return (
+                    2,
+                    0 if t.is_emergency else 1,
+                    0 if t.appointment_id else 1,
+                    t.token_number,
+                )
+
+            active_tokens.sort(key=sort_key)
+
+        items: list[QueueItemResponse] = []
+        for idx, t in enumerate(active_tokens, start=1):
+            patient = self._patient_repo.get_by_id(t.patient_id)
+            items.append(
+                QueueItemResponse(
+                    token_id=t.id,
+                    token_number=t.token_number,
+                    patient_name=patient.full_name if patient else "Unknown",
+                    status=t.status,
+                    is_emergency=t.is_emergency,
+                    position=idx,
+                )
+            )
+        return items
